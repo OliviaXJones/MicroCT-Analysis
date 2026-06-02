@@ -16,7 +16,13 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtCore import QThread, pyqtSignal
 from PyQt5.QtGui import QFont
 
-CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "studies.json")
+def _app_dir():
+    # When frozen by PyInstaller, write next to the .exe, not inside the temp bundle.
+    if getattr(sys, "frozen", False):
+        return os.path.dirname(sys.executable)
+    return os.path.dirname(os.path.abspath(__file__))
+
+CONFIG_FILE = os.path.join(_app_dir(), "studies.json")
 
 
 # ---------------------------------------------------------------------------

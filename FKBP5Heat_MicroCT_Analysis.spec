@@ -2,7 +2,7 @@
 
 
 a = Analysis(
-    ['microct_extractor.py'],
+    ['FKBP5Heat_MicroCT_Analysis.py'],
     pathex=[],
     binaries=[],
     datas=[],
@@ -22,7 +22,7 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name='MicroCT_Extractor',
+    name='FKBP5Heat_MicroCT_Analysis',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

@@ -22,9 +22,16 @@ from openpyxl.styles import Font as XLFont, PatternFill, Alignment
 
 LINEAGES = ['Pre-heat', 'F0', 'F1', 'F2']
 
-GENOTYPE_MAP = {
-    'W':  'Wildtype',     'H':  'Heterozygous',  'M':  'Mutant',
-    '2W': 'Wildtype',     '2H': 'Heterozygous',  '2M': 'Mutant',
+STUDY_PRESETS = {
+    'FKBP5 Heat': {
+        'W':  'Wildtype', 'H':  'Heterozygous', 'M':  'Mutant',
+        '2W': 'Wildtype', '2H': 'Heterozygous', '2M': 'Mutant',
+    },
+    'FKBP5 New': {
+        'W': 'Wildtype',
+        'Z': 'Heterozygous',
+        'X': 'Mutant',
+    },
 }
 
 LINEAGE_SUFFIX = {'Pre-heat': '', 'F0': ' F0', 'F1': ' F1', 'F2': ' F2'}
@@ -41,7 +48,7 @@ CORT_HEADERS = [
     'Object Volume (Obj.V) [mm³]',
     'Structure Thickness (St.Th) [mm]',
     'Medullary Volume (Med.V) [mm³]',
-    'vBMD',
+    'vTMD',
 ]
 
 TRAB_HEADERS = [
@@ -62,7 +69,7 @@ CORT_PARAMS = [
     ('Object Volume (Obj.V) [mm³]',    'Obj.V'),
     ('Structure Thickness (St.Th) [mm]', 'St.Th'),
     ('Medullary Volume (Med.V) [mm³]', 'Med.V'),
-    ('vBMD',                            'vBMD'),
+    ('vTMD',                            'vTMD'),
 ]
 
 TRAB_PARAMS = [
@@ -90,16 +97,16 @@ SEX_BONE_FOLDERS = {
 # Mouse code parsing
 # ---------------------------------------------------------------------------
 
-def parse_mouse_code(code):
+def parse_mouse_code(code, genotype_map):
     """
-    Parse 'W.12.M21' or '2W.4.F3' into (genotype_full, age_str, sex).
+    Parse 'W.12.M21' or 'Z.4.F3' into (genotype_full, age_str, sex).
     Returns None if the code doesn't match the expected format.
     """
     parts = code.split('.')
     if len(parts) != 3:
         return None
     geno_code, age_str, sex_id = parts
-    geno_full = GENOTYPE_MAP.get(geno_code.upper())
+    geno_full = genotype_map.get(geno_code.upper())
     if not geno_full:
         return None
     sex = sex_id[0].upper() if sex_id else None
@@ -185,7 +192,7 @@ def process_cortical_file(filepath):
         'Object Volume (Obj.V) [mm³]':    obj_v,
         'Structure Thickness (St.Th) [mm]':    st_th,
         'Medullary Volume (Med.V) [mm³]': med_v,
-        'vBMD':                                vbmd,
+        'vTMD':                                vbmd,
     }
 
 
@@ -334,10 +341,11 @@ class ProcessWorker(QThread):
     progress = pyqtSignal(int)
     finished = pyqtSignal(bool, str)
 
-    def __init__(self, folder_entries, output_dir):
+    def __init__(self, folder_entries, output_dir, genotype_map):
         super().__init__()
         self.folder_entries = folder_entries  # [(folder_path, lineage), ...]
         self.output_dir = output_dir
+        self.genotype_map = genotype_map
 
     def run(self):
         try:
@@ -365,7 +373,7 @@ class ProcessWorker(QThread):
             for filepath, lineage in all_cort:
                 self.log.emit(f'  [cortical]   {os.path.basename(filepath)}')
                 row = process_cortical_file(filepath)
-                parsed = parse_mouse_code(row['Mouse Code'])
+                parsed = parse_mouse_code(row['Mouse Code'], self.genotype_map)
                 if parsed is None:
                     self.log.emit(f'    WARNING: unrecognised code "{row["Mouse Code"]}" — skipped.')
                     skipped.append(row['Mouse Code'])
@@ -382,7 +390,7 @@ class ProcessWorker(QThread):
             for filepath, lineage in all_trab:
                 self.log.emit(f'  [trabecular] {os.path.basename(filepath)}')
                 row = process_trabecular_file(filepath)
-                parsed = parse_mouse_code(row['Mouse Code'])
+                parsed = parse_mouse_code(row['Mouse Code'], self.genotype_map)
                 if parsed is None:
                     self.log.emit(f'    WARNING: unrecognised code "{row["Mouse Code"]}" — skipped.')
                     skipped.append(row['Mouse Code'])
@@ -462,6 +470,14 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout(root)
         layout.setSpacing(10)
         layout.setContentsMargins(16, 16, 16, 16)
+
+        study_row = QHBoxLayout()
+        study_row.addWidget(QLabel('Study:'))
+        self.study_selector = QComboBox()
+        self.study_selector.addItems(list(STUDY_PRESETS.keys()))
+        study_row.addWidget(self.study_selector)
+        study_row.addStretch()
+        layout.addLayout(study_row)
 
         layout.addWidget(QLabel('Source folders (add one per lineage):'))
 
@@ -556,7 +572,8 @@ class MainWindow(QMainWindow):
             (self.table.item(r, 0).text(), self.table.item(r, 1).text())
             for r in range(self.table.rowCount())
         ]
-        self._worker = ProcessWorker(entries, self.output_edit.text())
+        genotype_map = STUDY_PRESETS[self.study_selector.currentText()]
+        self._worker = ProcessWorker(entries, self.output_edit.text(), genotype_map)
         self._worker.log.connect(self.log_box.append)
         self._worker.progress.connect(self.progress_bar.setValue)
         self._worker.finished.connect(self._on_done)

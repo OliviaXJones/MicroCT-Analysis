@@ -1,5 +1,6 @@
 build/
 dist/
+MicroCT_Analysis.exe
 __pycache__/
 *.pyc
 ~$*

@@ -9,7 +9,7 @@ from openpyxl.styles import Font as XLFont, PatternFill, Alignment
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QFormLayout, QGroupBox, QLabel, QLineEdit, QPushButton, QComboBox,
-    QCheckBox, QFileDialog, QTableWidget, QTableWidgetItem, QHeaderView,
+    QFileDialog, QTableWidget, QTableWidgetItem, QHeaderView,
     QDialog, QTextEdit, QMessageBox, QDialogButtonBox, QInputDialog,
     QAbstractItemView, QProgressBar,
 )
@@ -17,7 +17,6 @@ from PyQt5.QtCore import QThread, pyqtSignal
 from PyQt5.QtGui import QFont
 
 def _app_dir():
-    # When frozen by PyInstaller, write next to the .exe, not inside the temp bundle.
     if getattr(sys, "frozen", False):
         return os.path.dirname(sys.executable)
     return os.path.dirname(os.path.abspath(__file__))
@@ -69,16 +68,21 @@ TRAB_HEADERS = [
     "vBMD",
 ]
 
-SEX_FILE_MAP = {
+FEMUR_SEX_FILE_MAP = {
     ("M", "cortical"):   ("Male_Cortical.xlsx",    CORT_HEADERS),
     ("M", "trabecular"): ("Male_Trabecular.xlsx",  TRAB_HEADERS),
     ("F", "cortical"):   ("Female_Cortical.xlsx",  CORT_HEADERS),
     ("F", "trabecular"): ("Female_Trabecular.xlsx", TRAB_HEADERS),
 }
 
+SPINE_SEX_FILE_MAP = {
+    "M": ("Male_Spine.xlsx",   TRAB_HEADERS),
+    "F": ("Female_Spine.xlsx", TRAB_HEADERS),
+}
+
 
 # ---------------------------------------------------------------------------
-# File parsing  (identical to FKBP5Heat extractor)
+# File parsing
 # ---------------------------------------------------------------------------
 
 def mouse_code_from_path(filepath):
@@ -232,10 +236,10 @@ def _write_sheet(ws, headers, rows):
         ws.column_dimensions[col_cells[0].column_letter].width = min(width + 4, 40)
 
 
-def write_xlsx(output_dir, data, group_names, study_sex):
+def write_femur_xlsx(output_dir, data, group_names, study_sex):
     sexes = {"Male": ["M"], "Female": ["F"], "Mixed": ["M", "F"]}[study_sex]
     sheets = group_names if group_names else ["Data"]
-    for (sex, bone_type), (filename, headers) in SEX_FILE_MAP.items():
+    for (sex, bone_type), (filename, headers) in FEMUR_SEX_FILE_MAP.items():
         if sex not in sexes:
             continue
         wb = openpyxl.Workbook()
@@ -243,6 +247,21 @@ def write_xlsx(output_dir, data, group_names, study_sex):
         for name in sheets[1:]:
             wb.create_sheet(name)
         sheet_data = data.get((sex, bone_type), {})
+        for sheet_name in sheets:
+            _write_sheet(wb[sheet_name], headers, sheet_data.get(sheet_name, []))
+        wb.save(os.path.join(output_dir, filename))
+
+
+def write_spine_xlsx(output_dir, data, group_names, study_sex):
+    sexes = {"Male": ["M"], "Female": ["F"], "Mixed": ["M", "F"]}[study_sex]
+    sheets = group_names if group_names else ["Data"]
+    for sex in sexes:
+        filename, headers = SPINE_SEX_FILE_MAP[sex]
+        wb = openpyxl.Workbook()
+        wb.active.title = sheets[0]
+        for name in sheets[1:]:
+            wb.create_sheet(name)
+        sheet_data = data.get((sex, "trabecular"), {})
         for sheet_name in sheets:
             _write_sheet(wb[sheet_name], headers, sheet_data.get(sheet_name, []))
         wb.save(os.path.join(output_dir, filename))
@@ -257,11 +276,12 @@ class ProcessWorker(QThread):
     progress = pyqtSignal(int)
     finished = pyqtSignal(bool, str)
 
-    def __init__(self, data_folder, output_dir, study_cfg):
+    def __init__(self, data_folder, output_dir, study_cfg, bone_type):
         super().__init__()
         self.data_folder = data_folder
         self.output_dir  = output_dir
         self.study_cfg   = study_cfg
+        self.bone_type   = bone_type  # "femur" or "spine"
 
     def run(self):
         try:
@@ -273,14 +293,20 @@ class ProcessWorker(QThread):
             self.log.emit(f"Scanning: {self.data_folder}")
             cort_files, trab_files = find_data_files(self.data_folder)
 
+            if self.bone_type == "spine":
+                cort_files = []  # spine analysis uses trabecular only
+
             total = len(cort_files) + len(trab_files)
             if total == 0:
                 self.finished.emit(False, "No matching CT files found in the selected folder.")
                 return
 
-            self.log.emit(f"Found {len(cort_files)} cortical and {len(trab_files)} trabecular file(s).")
+            if self.bone_type == "spine":
+                self.log.emit(f"Found {len(trab_files)} spine trabecular file(s).")
+            else:
+                self.log.emit(f"Found {len(cort_files)} cortical and {len(trab_files)} trabecular file(s).")
 
-            xlsx_data = {}   # {(sex, bone_type): {group_name: [row, ...]}}
+            xlsx_data = {}
             skipped   = []
             done      = 0
 
@@ -297,8 +323,9 @@ class ProcessWorker(QThread):
                 done += 1
                 self.progress.emit(int(done / total * 80))
 
+            trab_label = "spine" if self.bone_type == "spine" else "trabecular"
             for filepath in trab_files:
-                self.log.emit(f"  [trabecular] {os.path.basename(filepath)}")
+                self.log.emit(f"  [{trab_label}]  {os.path.basename(filepath)}")
                 row    = process_trabecular_file(filepath)
                 parsed = parse_mouse_code(row["Mouse Code"], group_map, study_sex)
                 if parsed is None:
@@ -311,7 +338,10 @@ class ProcessWorker(QThread):
                 self.progress.emit(int(done / total * 80))
 
             self.log.emit("Writing Excel files…")
-            write_xlsx(self.output_dir, xlsx_data, group_order, study_sex)
+            if self.bone_type == "spine":
+                write_spine_xlsx(self.output_dir, xlsx_data, group_order, study_sex)
+            else:
+                write_femur_xlsx(self.output_dir, xlsx_data, group_order, study_sex)
             self.progress.emit(100)
 
             msg = f"Done!\n  • Output → {self.output_dir}"
@@ -400,16 +430,35 @@ class GetInfoDialog(QDialog):
         text.setFont(QFont("Courier New", 9))
 
         sex = data.get("sex", "—")
-        fmt = {"Male": "CC1  (prefix + ID)", "Female": "CC1  (prefix + ID)", "Mixed": "CC1M / CC1F  (prefix + ID + sex)"}.get(sex, "—")
+        fmt = {
+            "Male":   "CC1  (prefix + ID)",
+            "Female": "CC1  (prefix + ID)",
+            "Mixed":  "CC1M / CC1F  (prefix + ID + sex)",
+        }.get(sex, "—")
+
+        femur = data.get("femur", {})
+        spine = data.get("spine", {})
+
+        # backward compat: old top-level output_folder stored under femur
+        if not femur and "output_folder" in data:
+            femur = {
+                "data_folder":   data.get("data_folder", ""),
+                "output_folder": data.get("output_folder", ""),
+            }
+
         lines = [
             f"Study:             {study_name}",
             f"Age:               {data.get('age', '—')}",
             f"Sex:               {sex}",
             f"Mouse Code Format: {fmt}",
-        ]
-        lines += [
             "",
-            f"Output Folder:     {data.get('output_folder', '—')}",
+            "Femur:",
+            f"  Data Folder:   {femur.get('data_folder', '') or '—'}",
+            f"  Output Folder: {femur.get('output_folder', '') or '—'}",
+            "",
+            "Spine:",
+            f"  Data Folder:   {spine.get('data_folder', '') or '—'}",
+            f"  Output Folder: {spine.get('output_folder', '') or '—'}",
             "",
             "Group Map:",
         ]
@@ -464,7 +513,7 @@ class MainWindow(QMainWindow):
         sel_row.addStretch()
         outer.addLayout(sel_row)
 
-        # Study config
+        # Study config — shared across bones
         cfg_group = QGroupBox("Study Configuration")
         form = QFormLayout(cfg_group)
 
@@ -473,10 +522,7 @@ class MainWindow(QMainWindow):
 
         self.f_sex = QComboBox()
         self.f_sex.addItems(["Male", "Female", "Mixed"])
-        self.f_sex.currentTextChanged.connect(self._on_sex_changed)
         form.addRow(QLabel("Cohort Sex:"), self.f_sex)
-
-        # Mixed studies: codes must end in M/F (e.g. CC1M). Single-sex: no suffix needed.
 
         outer.addWidget(cfg_group)
 
@@ -484,7 +530,7 @@ class MainWindow(QMainWindow):
         gmap_group = QGroupBox("Group Map  (Prefix → Group Name)")
         gmap_layout = QVBoxLayout(gmap_group)
         gmap_layout.addWidget(QLabel(
-            "Map mouse code prefixes to group names.  e.g.  CC → Control + Control,  HC → Heat + Control"
+            "Map mouse code prefixes to group names.  e.g.  CC → Control,  HC → Heat + Control"
         ))
         self.group_map_editor = GroupMapEditor()
         gmap_layout.addWidget(self.group_map_editor)
@@ -501,9 +547,14 @@ class MainWindow(QMainWindow):
         study_btns.addStretch()
         outer.addLayout(study_btns)
 
-        # Run section
+        # Run section — bone-specific folders
         run_group = QGroupBox("Run")
         run_form = QFormLayout(run_group)
+
+        self.f_bone = QComboBox()
+        self.f_bone.addItems(["Femur", "Spine"])
+        self.f_bone.currentTextChanged.connect(self._on_bone_changed)
+        run_form.addRow(QLabel("Bone:"), self.f_bone)
 
         data_row = QHBoxLayout()
         self.f_data = QLineEdit()
@@ -561,8 +612,27 @@ class MainWindow(QMainWindow):
         d = self.config.get(name, {})
         self.f_age.setText(d.get("age", "16 Weeks"))
         self.f_sex.setCurrentText(d.get("sex", "Male"))
-        self.f_out.setText(d.get("output_folder", ""))
         self.group_map_editor.set_groups(d.get("group_map", []))
+        self._load_bone_folders(d)
+
+    def _load_bone_folders(self, d):
+        bone = self.f_bone.currentText().lower()
+        bone_data = d.get(bone, {})
+        # backward compat: old top-level output_folder is treated as femur's
+        if not bone_data and bone == "femur" and "output_folder" in d:
+            self.f_data.setText(d.get("data_folder", ""))
+            self.f_out.setText(d.get("output_folder", ""))
+        else:
+            self.f_data.setText(bone_data.get("data_folder", ""))
+            self.f_out.setText(bone_data.get("output_folder", ""))
+
+    def _on_bone_changed(self, _):
+        name = self.study_selector.currentText()
+        if name and name in self.config:
+            self._load_bone_folders(self.config[name])
+        else:
+            self.f_data.clear()
+            self.f_out.clear()
 
     def _new_study(self):
         name, ok = QInputDialog.getText(self, "New Study", "Study name:")
@@ -603,12 +673,23 @@ class MainWindow(QMainWindow):
         if not name:
             QMessageBox.warning(self, "No Study", "Select or create a study first.")
             return
-        self.config[name] = {
-            "age":           self.f_age.text().strip(),
-            "sex":           self.f_sex.currentText(),
+        bone = self.f_bone.currentText().lower()
+        existing = dict(self.config.get(name, {}))
+        existing.update({
+            "age":       self.f_age.text().strip(),
+            "sex":       self.f_sex.currentText(),
+            "group_map": self.group_map_editor.get_groups(),
+        })
+        bone_data = dict(existing.get(bone, {}))
+        bone_data.update({
+            "data_folder":   self.f_data.text().strip(),
             "output_folder": self.f_out.text().strip(),
-            "group_map":     self.group_map_editor.get_groups(),
-        }
+        })
+        existing[bone] = bone_data
+        # remove legacy top-level folder keys on first save in new format
+        existing.pop("output_folder", None)
+        existing.pop("data_folder", None)
+        self.config[name] = existing
         save_config(self.config)
         QMessageBox.information(self, "Saved", f'Study "{name}" saved.')
 
@@ -636,10 +717,12 @@ class MainWindow(QMainWindow):
         self.run_btn.setEnabled(False)
         self.log_box.clear()
         self.progress_bar.setValue(0)
+        bone_type = self.f_bone.currentText().lower()
         self._worker = ProcessWorker(
             self.f_data.text().strip(),
             self.f_out.text().strip(),
             self.config[name],
+            bone_type,
         )
         self._worker.log.connect(self.log_box.append)
         self._worker.progress.connect(self.progress_bar.setValue)
@@ -657,9 +740,6 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
-
-    def _on_sex_changed(self, _sex):
-        pass
 
     def _browse_dir(self, line_edit):
         path = QFileDialog.getExistingDirectory(self, "Select Directory")

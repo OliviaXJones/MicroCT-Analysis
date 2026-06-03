@@ -8,11 +8,11 @@ class LauncherWindow(QWidget):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("MicroCT Analysis Suite")
-        self.setFixedSize(320, 190)
+        self.setFixedSize(420, 240)
 
         layout = QVBoxLayout(self)
-        layout.setSpacing(14)
-        layout.setContentsMargins(36, 28, 36, 28)
+        layout.setSpacing(18)
+        layout.setContentsMargins(50, 36, 50, 36)
 
         title = QLabel("MicroCT Analysis Suite")
         title.setFont(QFont("Segoe UI", 12, QFont.Bold))

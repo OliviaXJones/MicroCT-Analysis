@@ -1,6 +1,7 @@
 import sys
 import os
 import csv
+import json
 from pathlib import Path
 
 from PyQt5.QtWidgets import (
@@ -170,9 +171,9 @@ def find_data_files(root_dir):
             lower = f.lower()
             if '_rec_tra_voi_' in lower and lower.endswith('.txt'):
                 path = os.path.join(dirpath, f)
-                if lower.endswith('3dcort.txt'):
+                if lower.endswith('3dcort.txt') or lower.endswith('3d_cort.txt'):
                     cort_files.append(path)
-                elif lower.endswith('3dtrab.txt'):
+                elif lower.endswith('3dtrab.txt') or lower.endswith('3d_trab.txt'):
                     trab_files.append(path)
     return cort_files, trab_files
 
@@ -181,7 +182,10 @@ def process_cortical_file(filepath):
     tv    = extract_field(filepath, 'Total VOI volume,TV,')
     obj_v = extract_field(filepath, 'Object volume,Obj.V,')
     st_th = extract_field(filepath, 'Structure thickness,St.Th,')
-    med_v = (tv - obj_v) if (tv is not None and obj_v is not None) else None
+    missing = [name for name, val in [('TV', tv), ('Obj.V', obj_v), ('St.Th', st_th)] if val is None]
+    if missing:
+        raise ValueError(f"missing fields {missing} in {os.path.basename(filepath)}")
+    med_v = tv - obj_v
     vbmd  = None
     hist_path = find_sibling_hist(os.path.dirname(filepath), 'histcort')
     if hist_path:
@@ -201,15 +205,28 @@ def process_trabecular_file(filepath):
     hist_path = find_sibling_hist(os.path.dirname(filepath), 'histtrab')
     if hist_path:
         vbmd = extract_hist_mean(hist_path, 'Mean (total):')
+    bvtv   = extract_field(filepath, 'Percent bone volume,BV/TV,')
+    bsbv   = extract_field(filepath, 'Bone surface / volume ratio,BS/BV,')
+    tbpf   = extract_field(filepath, 'Trabecular pattern factor,Tb.Pf,')
+    tbth   = extract_field(filepath, 'Trabecular thickness,Tb.Th,')
+    tbn    = extract_field(filepath, 'Trabecular number,Tb.N,')
+    tbsp   = extract_field(filepath, 'Trabecular separation,Tb.Sp,')
+    conndn = extract_field(filepath, 'Connectivity density,Conn.Dn,')
+    missing = [name for name, val in [
+        ('BV/TV', bvtv), ('BS/BV', bsbv), ('Tb.Pf', tbpf), ('Tb.Th', tbth),
+        ('Tb.N', tbn), ('Tb.Sp', tbsp), ('Conn.Dn', conndn),
+    ] if val is None]
+    if missing:
+        raise ValueError(f"missing fields {missing} in {os.path.basename(filepath)}")
     return {
         'Mouse Code':                                   mouse_code_from_path(filepath),
-        'Percent Bone Volume (BV/TV) [%]':              extract_field(filepath, 'Percent bone volume,BV/TV,'),
-        'Bone Surface/Volume Ratio (BS/BV) [1/mm]':     extract_field(filepath, 'Bone surface / volume ratio,BS/BV,'),
-        'Trabecular Pattern Factor (Tb.Pf) [1/mm]':     extract_field(filepath, 'Trabecular pattern factor,Tb.Pf,'),
-        'Trabecular Thickness (Tb.Th) [mm]':            extract_field(filepath, 'Trabecular thickness,Tb.Th,'),
-        'Trabecular Number (Tb.N) [1/mm]':              extract_field(filepath, 'Trabecular number,Tb.N,'),
-        'Trabecular Separation (Tb.Sp) [mm]':           extract_field(filepath, 'Trabecular separation,Tb.Sp,'),
-        'Connectivity Density (Conn.Dn) [1/mm³]':  extract_field(filepath, 'Connectivity density,Conn.Dn,'),
+        'Percent Bone Volume (BV/TV) [%]':              bvtv,
+        'Bone Surface/Volume Ratio (BS/BV) [1/mm]':     bsbv,
+        'Trabecular Pattern Factor (Tb.Pf) [1/mm]':     tbpf,
+        'Trabecular Thickness (Tb.Th) [mm]':            tbth,
+        'Trabecular Number (Tb.N) [1/mm]':              tbn,
+        'Trabecular Separation (Tb.Sp) [mm]':           tbsp,
+        'Connectivity Density (Conn.Dn) [1/mm³]':       conndn,
         'vBMD':                                         vbmd,
     }
 
@@ -372,35 +389,43 @@ class ProcessWorker(QThread):
 
             for filepath, lineage in all_cort:
                 self.log.emit(f'  [cortical]   {os.path.basename(filepath)}')
-                row = process_cortical_file(filepath)
-                parsed = parse_mouse_code(row['Mouse Code'], self.genotype_map)
-                if parsed is None:
-                    self.log.emit(f'    WARNING: unrecognised code "{row["Mouse Code"]}" — skipped.')
-                    skipped.append(row['Mouse Code'])
-                else:
-                    geno_full, age, sex = parsed
-                    row.update(_sex=sex, _geno_full=geno_full, _age=age,
-                               _lineage=lineage, _bone_type='cortical')
-                    all_rows.append(row)
-                    sheet = sheet_name_for(geno_full, lineage)
-                    xlsx_data.setdefault((sex, 'cortical'), {}).setdefault(sheet, []).append(row)
+                try:
+                    row = process_cortical_file(filepath)
+                    parsed = parse_mouse_code(row['Mouse Code'], self.genotype_map)
+                    if parsed is None:
+                        self.log.emit(f'    WARNING: unrecognised code "{row["Mouse Code"]}" — skipped.')
+                        skipped.append(row['Mouse Code'])
+                    else:
+                        geno_full, age, sex = parsed
+                        row.update(_sex=sex, _geno_full=geno_full, _age=age,
+                                   _lineage=lineage, _bone_type='cortical')
+                        all_rows.append(row)
+                        sheet = sheet_name_for(geno_full, lineage)
+                        xlsx_data.setdefault((sex, 'cortical'), {}).setdefault(sheet, []).append(row)
+                except ValueError as e:
+                    self.log.emit(f'    ERROR: {e} — skipped.')
+                    skipped.append(os.path.basename(filepath))
                 done += 1
                 self.progress.emit(int(done / total * 50))  # first half = file processing
 
             for filepath, lineage in all_trab:
                 self.log.emit(f'  [trabecular] {os.path.basename(filepath)}')
-                row = process_trabecular_file(filepath)
-                parsed = parse_mouse_code(row['Mouse Code'], self.genotype_map)
-                if parsed is None:
-                    self.log.emit(f'    WARNING: unrecognised code "{row["Mouse Code"]}" — skipped.')
-                    skipped.append(row['Mouse Code'])
-                else:
-                    geno_full, age, sex = parsed
-                    row.update(_sex=sex, _geno_full=geno_full, _age=age,
-                               _lineage=lineage, _bone_type='trabecular')
-                    all_rows.append(row)
-                    sheet = sheet_name_for(geno_full, lineage)
-                    xlsx_data.setdefault((sex, 'trabecular'), {}).setdefault(sheet, []).append(row)
+                try:
+                    row = process_trabecular_file(filepath)
+                    parsed = parse_mouse_code(row['Mouse Code'], self.genotype_map)
+                    if parsed is None:
+                        self.log.emit(f'    WARNING: unrecognised code "{row["Mouse Code"]}" — skipped.')
+                        skipped.append(row['Mouse Code'])
+                    else:
+                        geno_full, age, sex = parsed
+                        row.update(_sex=sex, _geno_full=geno_full, _age=age,
+                                   _lineage=lineage, _bone_type='trabecular')
+                        all_rows.append(row)
+                        sheet = sheet_name_for(geno_full, lineage)
+                        xlsx_data.setdefault((sex, 'trabecular'), {}).setdefault(sheet, []).append(row)
+                except ValueError as e:
+                    self.log.emit(f'    ERROR: {e} — skipped.')
+                    skipped.append(os.path.basename(filepath))
                 done += 1
                 self.progress.emit(int(done / total * 50))
 
@@ -460,9 +485,12 @@ class LineageDialog(QDialog):
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
+        self._current_study = None
         self.setWindowTitle('MicroCT Data Extractor — FKBP5')
         self.setMinimumWidth(780)
         self._build_ui()
+        self._current_study = self.study_selector.currentText()
+        self._load_config()
 
     def _build_ui(self):
         root = QWidget()
@@ -475,6 +503,7 @@ class MainWindow(QMainWindow):
         study_row.addWidget(QLabel('Study:'))
         self.study_selector = QComboBox()
         self.study_selector.addItems(list(STUDY_PRESETS.keys()))
+        self.study_selector.currentTextChanged.connect(self._on_study_changed)
         study_row.addWidget(self.study_selector)
         study_row.addStretch()
         layout.addLayout(study_row)
@@ -547,17 +576,20 @@ class MainWindow(QMainWindow):
         self.table.setItem(row, 0, QTableWidgetItem(path))
         self.table.setItem(row, 1, QTableWidgetItem(dlg.lineage()))
         self._refresh_run()
+        self._save_config()
 
     def _remove_folder(self):
         for r in sorted({i.row() for i in self.table.selectedItems()}, reverse=True):
             self.table.removeRow(r)
         self._refresh_run()
+        self._save_config()
 
     def _pick_output(self):
         path = QFileDialog.getExistingDirectory(self, 'Select Output Folder')
         if path:
             self.output_edit.setText(path)
             self._refresh_run()
+            self._save_config()
 
     def _refresh_run(self):
         self.run_btn.setEnabled(
@@ -578,6 +610,57 @@ class MainWindow(QMainWindow):
         self._worker.progress.connect(self.progress_bar.setValue)
         self._worker.finished.connect(self._on_done)
         self._worker.start()
+
+    def _config_path(self):
+        base = os.path.dirname(os.path.abspath(sys.argv[0]))
+        return os.path.join(base, 'fkbp5_paths.json')
+
+    def _load_config(self):
+        study = self.study_selector.currentText()
+        try:
+            with open(self._config_path(), 'r') as f:
+                config = json.load(f)
+            data = config.get(study, {})
+            folders = data.get('folders', [])
+            output = data.get('output', '')
+        except (FileNotFoundError, json.JSONDecodeError):
+            folders = []
+            output = ''
+        self.table.setRowCount(0)
+        for path, lineage in folders:
+            row = self.table.rowCount()
+            self.table.insertRow(row)
+            self.table.setItem(row, 0, QTableWidgetItem(path))
+            self.table.setItem(row, 1, QTableWidgetItem(lineage))
+        self.output_edit.setText(output)
+        self._refresh_run()
+
+    def _save_config(self, study=None):
+        if study is None:
+            study = self.study_selector.currentText()
+        folders = [
+            (self.table.item(r, 0).text(), self.table.item(r, 1).text())
+            for r in range(self.table.rowCount())
+        ]
+        output = self.output_edit.text()
+        config = {}
+        try:
+            with open(self._config_path(), 'r') as f:
+                config = json.load(f)
+        except (FileNotFoundError, json.JSONDecodeError):
+            pass
+        config[study] = {'folders': folders, 'output': output}
+        try:
+            with open(self._config_path(), 'w') as f:
+                json.dump(config, f, indent=2)
+        except Exception:
+            pass
+
+    def _on_study_changed(self, new_study):
+        if self._current_study and self._current_study != new_study:
+            self._save_config(self._current_study)
+        self._current_study = new_study
+        self._load_config()
 
     def _on_done(self, ok, msg):
         self.log_box.append(msg)

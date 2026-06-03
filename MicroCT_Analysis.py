@@ -130,9 +130,9 @@ def find_data_files(root_dir):
             lower = f.lower()
             if "_rec_tra_voi_" in lower and lower.endswith(".txt"):
                 path = os.path.join(dirpath, f)
-                if lower.endswith("3dcort.txt"):
+                if lower.endswith("3dcort.txt") or lower.endswith("3d_cort.txt"):
                     cort_files.append(path)
-                elif lower.endswith("3dtrab.txt"):
+                elif lower.endswith("3dtrab.txt") or lower.endswith("3d_trab.txt"):
                     trab_files.append(path)
     return cort_files, trab_files
 
@@ -141,7 +141,10 @@ def process_cortical_file(filepath):
     tv    = extract_field(filepath, "Total VOI volume,TV,")
     obj_v = extract_field(filepath, "Object volume,Obj.V,")
     st_th = extract_field(filepath, "Structure thickness,St.Th,")
-    med_v = (tv - obj_v) if (tv is not None and obj_v is not None) else None
+    missing = [name for name, val in [("TV", tv), ("Obj.V", obj_v), ("St.Th", st_th)] if val is None]
+    if missing:
+        raise ValueError(f"missing fields {missing} in {os.path.basename(filepath)}")
+    med_v = tv - obj_v
     vbmd  = None
     hist_path = find_sibling_hist(os.path.dirname(filepath), "histcort")
     if hist_path:
@@ -161,15 +164,28 @@ def process_trabecular_file(filepath):
     hist_path = find_sibling_hist(os.path.dirname(filepath), "histtrab")
     if hist_path:
         vbmd = extract_hist_mean(hist_path, "Mean (total):")
+    bvtv   = extract_field(filepath, "Percent bone volume,BV/TV,")
+    bsbv   = extract_field(filepath, "Bone surface / volume ratio,BS/BV,")
+    tbpf   = extract_field(filepath, "Trabecular pattern factor,Tb.Pf,")
+    tbth   = extract_field(filepath, "Trabecular thickness,Tb.Th,")
+    tbn    = extract_field(filepath, "Trabecular number,Tb.N,")
+    tbsp   = extract_field(filepath, "Trabecular separation,Tb.Sp,")
+    conndn = extract_field(filepath, "Connectivity density,Conn.Dn,")
+    missing = [name for name, val in [
+        ("BV/TV", bvtv), ("BS/BV", bsbv), ("Tb.Pf", tbpf), ("Tb.Th", tbth),
+        ("Tb.N", tbn), ("Tb.Sp", tbsp), ("Conn.Dn", conndn),
+    ] if val is None]
+    if missing:
+        raise ValueError(f"missing fields {missing} in {os.path.basename(filepath)}")
     return {
         "Mouse Code":                                   mouse_code_from_path(filepath),
-        "Percent Bone Volume (BV/TV) [%]":              extract_field(filepath, "Percent bone volume,BV/TV,"),
-        "Bone Surface/Volume Ratio (BS/BV) [1/mm]":     extract_field(filepath, "Bone surface / volume ratio,BS/BV,"),
-        "Trabecular Pattern Factor (Tb.Pf) [1/mm]":     extract_field(filepath, "Trabecular pattern factor,Tb.Pf,"),
-        "Trabecular Thickness (Tb.Th) [mm]":            extract_field(filepath, "Trabecular thickness,Tb.Th,"),
-        "Trabecular Number (Tb.N) [1/mm]":              extract_field(filepath, "Trabecular number,Tb.N,"),
-        "Trabecular Separation (Tb.Sp) [mm]":           extract_field(filepath, "Trabecular separation,Tb.Sp,"),
-        "Connectivity Density (Conn.Dn) [1/mm³]":       extract_field(filepath, "Connectivity density,Conn.Dn,"),
+        "Percent Bone Volume (BV/TV) [%]":              bvtv,
+        "Bone Surface/Volume Ratio (BS/BV) [1/mm]":     bsbv,
+        "Trabecular Pattern Factor (Tb.Pf) [1/mm]":     tbpf,
+        "Trabecular Thickness (Tb.Th) [mm]":            tbth,
+        "Trabecular Number (Tb.N) [1/mm]":              tbn,
+        "Trabecular Separation (Tb.Sp) [mm]":           tbsp,
+        "Connectivity Density (Conn.Dn) [1/mm³]":       conndn,
         "vBMD":                                         vbmd,
     }
 
@@ -312,28 +328,36 @@ class ProcessWorker(QThread):
 
             for filepath in cort_files:
                 self.log.emit(f"  [cortical]   {os.path.basename(filepath)}")
-                row    = process_cortical_file(filepath)
-                parsed = parse_mouse_code(row["Mouse Code"], group_map, study_sex)
-                if parsed is None:
-                    self.log.emit(f'    WARNING: unrecognised code "{row["Mouse Code"]}" — skipped.')
-                    skipped.append(row["Mouse Code"])
-                else:
-                    group_name, sex = parsed
-                    xlsx_data.setdefault((sex, "cortical"), {}).setdefault(group_name, []).append(row)
+                try:
+                    row    = process_cortical_file(filepath)
+                    parsed = parse_mouse_code(row["Mouse Code"], group_map, study_sex)
+                    if parsed is None:
+                        self.log.emit(f'    WARNING: unrecognised code "{row["Mouse Code"]}" — skipped.')
+                        skipped.append(row["Mouse Code"])
+                    else:
+                        group_name, sex = parsed
+                        xlsx_data.setdefault((sex, "cortical"), {}).setdefault(group_name, []).append(row)
+                except ValueError as e:
+                    self.log.emit(f"    ERROR: {e} — skipped.")
+                    skipped.append(os.path.basename(filepath))
                 done += 1
                 self.progress.emit(int(done / total * 80))
 
             trab_label = "spine" if self.bone_type == "spine" else "trabecular"
             for filepath in trab_files:
                 self.log.emit(f"  [{trab_label}]  {os.path.basename(filepath)}")
-                row    = process_trabecular_file(filepath)
-                parsed = parse_mouse_code(row["Mouse Code"], group_map, study_sex)
-                if parsed is None:
-                    self.log.emit(f'    WARNING: unrecognised code "{row["Mouse Code"]}" — skipped.')
-                    skipped.append(row["Mouse Code"])
-                else:
-                    group_name, sex = parsed
-                    xlsx_data.setdefault((sex, "trabecular"), {}).setdefault(group_name, []).append(row)
+                try:
+                    row    = process_trabecular_file(filepath)
+                    parsed = parse_mouse_code(row["Mouse Code"], group_map, study_sex)
+                    if parsed is None:
+                        self.log.emit(f'    WARNING: unrecognised code "{row["Mouse Code"]}" — skipped.')
+                        skipped.append(row["Mouse Code"])
+                    else:
+                        group_name, sex = parsed
+                        xlsx_data.setdefault((sex, "trabecular"), {}).setdefault(group_name, []).append(row)
+                except ValueError as e:
+                    self.log.emit(f"    ERROR: {e} — skipped.")
+                    skipped.append(os.path.basename(filepath))
                 done += 1
                 self.progress.emit(int(done / total * 80))
 

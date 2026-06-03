@@ -1,2 +1,2 @@
 @echo off
-start "" "%~dp0dist\launcher.exe"
+start "" "%~dp0dist\MicroCT_Analysis.exe"

@@ -202,13 +202,8 @@ _CODE_RE = re.compile(r'^([A-Za-z]+)(\d+)([MF]?)$', re.IGNORECASE)
 def parse_mouse_code(code, group_map, study_sex):
     """
     Parses PREFIX+ID[+SEX] without requiring any separator.
-      CC1M  → prefix=CC, id=1, sex=M
-      CC1   → prefix=CC, id=1, sex from study_sex
-      MC1M  → prefix=MC, id=1, sex=M  (M prefix never confused with sex marker)
-
-    Mixed studies require a trailing sex character; codes without one are skipped.
-    Single-sex studies ignore the trailing sex character if present.
-    Returns (group_name, sex_char) or None.
+    Handles trailing sex markers (e.g. HC10F) as well as sex markers 
+    embedded in the prefix (e.g. HCF10).
     """
     m = _CODE_RE.match(code)
     if not m:
@@ -217,9 +212,14 @@ def parse_mouse_code(code, group_map, study_sex):
     sex_char = m.group(3).upper()
 
     if study_sex == "Mixed":
-        if not sex_char:
+        if sex_char:
+            sex = sex_char
+        elif prefix.endswith("F"):
+            sex = "F"
+        elif prefix.endswith("M"):
+            sex = "M"
+        else:
             return None
-        sex = sex_char
     else:
         sex = "M" if study_sex == "Male" else "F"
 

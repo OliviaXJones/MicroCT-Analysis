@@ -194,16 +194,16 @@ def process_trabecular_file(filepath):
 # Mouse code parsing
 # ---------------------------------------------------------------------------
 
-# Matches codes like CC1M, CC1, MC2F, HC10 — prefix (letters), ID (digits),
-# optional sex marker (M or F) at the end.
+# Matches codes like CC1M, CC1, MC2F, HC10, HCF10, HCM10 — prefix (letters),
+# ID (digits), optional trailing sex marker (M or F).
 _CODE_RE = re.compile(r'^([A-Za-z]+)(\d+)([MF]?)$', re.IGNORECASE)
 
 
 def parse_mouse_code(code, group_map, study_sex):
     """
-    Parses PREFIX+ID[+SEX] without requiring any separator.
-    Handles trailing sex markers (e.g. HC10F) as well as sex markers 
-    embedded in the prefix (e.g. HCF10).
+    Parses PREFIX+ID[+SEX] or PREFIX[SEX]+ID without any separator.
+    Sex can appear after the ID (HC10F), or embedded at the end of the
+    prefix before the ID (HCF10 / HCM10).
     """
     m = _CODE_RE.match(code)
     if not m:
@@ -211,19 +211,20 @@ def parse_mouse_code(code, group_map, study_sex):
     prefix   = m.group(1).upper()
     sex_char = m.group(3).upper()
 
+    lookup_prefix = prefix
+
     if study_sex == "Mixed":
         if sex_char:
             sex = sex_char
-        elif prefix.endswith("F"):
-            sex = "F"
-        elif prefix.endswith("M"):
-            sex = "M"
+        elif prefix.endswith(("F", "M")):
+            sex = prefix[-1]
+            lookup_prefix = prefix[:-1]
         else:
             return None
     else:
         sex = "M" if study_sex == "Male" else "F"
 
-    group_name = group_map.get(prefix)
+    group_name = group_map.get(lookup_prefix)
     if not group_name:
         return None
     return group_name, sex

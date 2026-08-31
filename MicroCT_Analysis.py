@@ -736,17 +736,22 @@ class MainWindow(QMainWindow):
 
     def _run(self):
         name = self.study_selector.currentText()
-        if not name or name not in self.config:
-            QMessageBox.warning(self, "No Study", "Save the study configuration before running.")
+        if not name:
+            QMessageBox.warning(self, "No Study", "Select or create a study first.")
             return
         self.run_btn.setEnabled(False)
         self.log_box.clear()
         self.progress_bar.setValue(0)
         bone_type = self.f_bone.currentText().lower()
+        study_cfg = dict(self.config.get(name, {}))
+        study_cfg.update({
+            "sex":       self.f_sex.currentText(),
+            "group_map": self.group_map_editor.get_groups(),
+        })
         self._worker = ProcessWorker(
             self.f_data.text().strip(),
             self.f_out.text().strip(),
-            self.config[name],
+            study_cfg,
             bone_type,
         )
         self._worker.log.connect(self.log_box.append)
